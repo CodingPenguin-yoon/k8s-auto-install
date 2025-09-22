@@ -23,7 +23,25 @@ echo ""
 
 # 4. Cilium 상태 확인 (WeaveNet 대신)
 echo "4. Cilium CNI 상태 확인..."
-cilium status
+if command -v cilium >/dev/null 2>&1; then
+    echo "Cilium CLI로 상태 확인:"
+    cilium status
+else
+    echo "⚠️ Cilium CLI가 없음. kubectl로 상태 확인:"
+    echo ""
+    echo "Cilium 파드 상태:"
+    kubectl get pods -n kube-system -l k8s-app=cilium -o wide
+    echo ""
+    echo "Cilium 데몬셋 상태:"
+    kubectl get ds -n kube-system cilium
+    echo ""
+    echo "Cilium 서비스 상태:"
+    kubectl get svc -n kube-system -l k8s-app=cilium
+    echo ""
+    echo "💡 Cilium CLI 수동 설치 방법:"
+    echo "   curl -L --remote-name-all https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-amd64.tar.gz"
+    echo "   sudo tar xzvfC cilium-linux-amd64.tar.gz /usr/local/bin"
+fi
 echo ""
 
 # 5. Rocky Linux 8.10 특화 확인

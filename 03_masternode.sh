@@ -31,46 +31,160 @@ echo ""
 
 # 4. Helm 설치 (Cilium CNI를 위해)
 echo "4. Helm 설치..."
-curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+if ! command -v helm >/dev/null 2>&1; then
+    curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    export PATH=$PATH:/usr/local/bin
+else
+    echo "✅ Helm이 이미 설치되어 있습니다."
+fi
+
+# Helm 설치 확인
+helm version --short || {
+    echo "❌ Helm 설치 실패!"
+    exit 1
+}
 
 # 5. Cilium 저장소 추가
 echo "5. Cilium 저장소 추가..."
-helm repo add cilium https://helm.cilium.io/
-helm repo update
+helm repo add cilium https://helm.cilium.io/ || {
+    echo "❌ Cilium 저장소 추가 실패!"
+    exit 1
+}
+helm repo update || {
+    echo "❌ Helm 저장소 업데이트 실패!"
+    exit 1
+}
 
 # 6. 기존 CNI 정리 (충돌 방지)
 echo "6-1. 기존 CNI 정리 (충돌 방지)..."
 sudo rm -rf /opt/cni/bin/flannel* 2>/dev/null || true
 sudo rm -rf /etc/cni/net.d/10-flannel.conflist 2>/dev/null || true
 
+# 6. kubectl 연결 테스트
+echo "6-1. kubectl 연결 테스트..."
+kubectl get nodes || {
+    echo "❌ kubectl 연결 실패! kubeconfig 설정을 확인하세요."
+    exit 1
+}
+
 # 6. Cilium CNI 설치 (강의의 WeaveNet 대신)
 echo "6-2. Cilium CNI 설치..."
-helm install cilium cilium/cilium --version 1.16.0 \
-  --namespace kube-system \
-  --set k8sServiceHost=$MASTER_IP \
-  --set k8sServicePort=6443 \
-  --set kubeProxyReplacement=true \
-  --set routingMode=native \
-  --set autoDirectNodeRoutes=true \
-  --set ipam.mode=kubernetes \
-  --set bpf.masquerade=true \
-  --set ipv4NativeRoutingCIDR=10.128.0.0/16 \
-  --set containerRuntime.integration=containerd
+echo "Cilium 설치 중... 몇 분 소요될 수 있습니다."
 
-# 7. Cilium CLI 설치
+# 기존 Cilium 설치 확인
+if helm list -n kube-system | grep -q cilium; then
+    echo "⚠️ Cilium이 이미 설치되어 있습니다. 업그레이드합니다..."
+    helm upgrade cilium cilium/cilium --version 1.16.0 \
+      --namespace kube-system \
+      --set k8sServiceHost=$MASTER_IP \
+      --set k8sServicePort=6443 \
+      --set kubeProxyReplacement=true \
+      --set routingMode=native \
+      --set autoDirectNodeRoutes=true \
+      --set ipam.mode=kubernetes \
+      --set bpf.masquerade=true \
+      --set ipv4NativeRoutingCIDR=10.128.0.0/16 \
+      --set containerRuntime.integration=containerd \
+      --set cluster.name=k8s-cluster \
+      --set cluster.id=1 \
+      --wait --timeout=10m
+else
+    # 새로 설치
+    helm install cilium cilium/cilium --version 1.16.0 \
+      --namespace kube-system \
+      --set k8sServiceHost=$MASTER_IP \
+      --set k8sServicePort=6443 \
+      --set kubeProxyReplacement=true \
+      --set routingMode=native \
+      --set autoDirectNodeRoutes=true \
+      --set ipam.mode=kubernetes \
+      --set bpf.masquerade=true \
+      --set ipv4NativeRoutingCIDR=10.128.0.0/16 \
+      --set containerRuntime.integration=containerd \
+      --set cluster.name=k8s-cluster \
+      --set cluster.id=1 \
+      --wait --timeout=10m || {
+        echo "❌ Cilium 설치 실패!"
+        echo "디버그 정보:"
+        kubectl get pods -n kube-system
+        helm list -n kube-system
+        exit 1
+      }
+fi
+
+# Cilium 설치 확인
+echo "Cilium 설치 상태 확인 중..."
+kubectl rollout status -n kube-system daemonset/cilium --timeout=300s || {
+    echo "❌ Cilium 데몬셋 준비 실패!"
+    kubectl describe daemonset cilium -n kube-system
+    exit 1
+}
+echo "✅ Cilium 데몬셋 준비 완료"
+
+# 7. Cilium CLI 설치 (확실한 방법)
 echo "7. Cilium CLI 설치..."
-CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
-CLI_ARCH=amd64
-curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
-sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
-sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
-rm cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
+
+# 고정 버전으로 안정적 설치
+CILIUM_CLI_VERSION="v0.15.22"
+CLI_ARCH="amd64"
+echo "Cilium CLI 버전: $CILIUM_CLI_VERSION"
+
+# 작업 디렉토리 생성
+WORK_DIR="/tmp/cilium-install"
+mkdir -p $WORK_DIR
+cd $WORK_DIR
+
+# 다운로드 시도
+echo "Cilium CLI 다운로드 중..."
+if curl -L --fail -o cilium-linux-${CLI_ARCH}.tar.gz \
+   "https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz"; then
+   
+    echo "✅ 다운로드 성공, 설치 중..."
+    sudo tar -C /usr/local/bin -xzf cilium-linux-${CLI_ARCH}.tar.gz
+    sudo chmod +x /usr/local/bin/cilium
+    
+    # PATH에 추가
+    echo 'export PATH=$PATH:/usr/local/bin' >> ~/.bashrc
+    export PATH=$PATH:/usr/local/bin
+    
+    # 설치 확인
+    if /usr/local/bin/cilium version --client >/dev/null 2>&1; then
+        echo "✅ Cilium CLI 설치 성공!"
+        /usr/local/bin/cilium version --client
+    else
+        echo "⚠️ Cilium CLI 설치되었지만 실행 확인 실패"
+    fi
+else
+    echo "❌ Cilium CLI 다운로드 실패"
+    echo "수동 설치 명령:"
+    echo "curl -L --remote-name-all https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-amd64.tar.gz"
+    echo "sudo tar xzvfC cilium-linux-amd64.tar.gz /usr/local/bin"
+fi
+
+# 정리
+cd /
+rm -rf $WORK_DIR
 
 echo "=== 6단계 완료! ==="
 echo ""
+
+# 최종 설치 상태 확인
+echo "🔍 최종 설치 상태 확인:"
+echo "1. Cilium 파드 상태:"
+kubectl get pods -n kube-system -l k8s-app=cilium --no-headers | head -3
+
+echo ""
+echo "2. Cilium CLI 상태:"
+if command -v cilium >/dev/null 2>&1; then
+    echo "✅ Cilium CLI 사용 가능"
+else
+    echo "❌ Cilium CLI 사용 불가 - kubectl로 확인 필요"
+fi
+
+echo ""
 echo "📋 다음 단계:"
 echo "1. 위에 출력된 join 명령을 각 워커 노드에서 실행"
-echo "2. 모든 워커 노드 조인 완료 후 lecture_step8_verify.sh 실행"
+echo "2. 모든 워커 노드 조인 완료 후 05_chexk.sh 실행"
 echo ""
 echo "💡 팁: join 토큰은 24시간 후 만료됩니다."
 echo "   만료 시 'kubeadm token create --print-join-command' 재실행"
