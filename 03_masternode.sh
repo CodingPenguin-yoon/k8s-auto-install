@@ -32,25 +32,44 @@ echo ""
 # 4. Helm 설치 (Cilium CNI를 위해)
 echo "4. Helm 설치..."
 if ! command -v helm >/dev/null 2>&1; then
+    echo "Helm 다운로드 및 설치 중..."
     curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    
+    # PATH 즉시 적용
     export PATH=$PATH:/usr/local/bin
+    
+    # 현재 세션에서 helm 사용 가능하도록 설정
+    if [ -f /usr/local/bin/helm ]; then
+        sudo chmod +x /usr/local/bin/helm
+        echo "✅ Helm 설치 완료: /usr/local/bin/helm"
+    else
+        echo "❌ Helm 바이너리를 찾을 수 없습니다."
+        exit 1
+    fi
 else
     echo "✅ Helm이 이미 설치되어 있습니다."
 fi
 
-# Helm 설치 확인
-helm version --short || {
+# Helm 설치 확인 (전체 경로로)
+echo "Helm 버전 확인 중..."
+if /usr/local/bin/helm version --short >/dev/null 2>&1; then
+    echo "✅ Helm 설치 성공!"
+    /usr/local/bin/helm version --short
+else
     echo "❌ Helm 설치 실패!"
+    echo "디버그 정보:"
+    ls -la /usr/local/bin/helm* || echo "Helm 바이너리 없음"
+    echo "PATH: $PATH"
     exit 1
-}
+fi
 
 # 5. Cilium 저장소 추가
 echo "5. Cilium 저장소 추가..."
-helm repo add cilium https://helm.cilium.io/ || {
+/usr/local/bin/helm repo add cilium https://helm.cilium.io/ || {
     echo "❌ Cilium 저장소 추가 실패!"
     exit 1
 }
-helm repo update || {
+/usr/local/bin/helm repo update || {
     echo "❌ Helm 저장소 업데이트 실패!"
     exit 1
 }
@@ -72,9 +91,9 @@ echo "6-2. Cilium CNI 설치..."
 echo "Cilium 설치 중... 몇 분 소요될 수 있습니다."
 
 # 기존 Cilium 설치 확인
-if helm list -n kube-system | grep -q cilium; then
+if /usr/local/bin/helm list -n kube-system | grep -q cilium; then
     echo "⚠️ Cilium이 이미 설치되어 있습니다. 업그레이드합니다..."
-    helm upgrade cilium cilium/cilium --version 1.16.0 \
+    /usr/local/bin/helm upgrade cilium cilium/cilium --version 1.16.0 \
       --namespace kube-system \
       --set k8sServiceHost=$MASTER_IP \
       --set k8sServicePort=6443 \
@@ -90,7 +109,7 @@ if helm list -n kube-system | grep -q cilium; then
       --wait --timeout=10m
 else
     # 새로 설치
-    helm install cilium cilium/cilium --version 1.16.0 \
+    /usr/local/bin/helm install cilium cilium/cilium --version 1.16.0 \
       --namespace kube-system \
       --set k8sServiceHost=$MASTER_IP \
       --set k8sServicePort=6443 \
@@ -107,7 +126,7 @@ else
         echo "❌ Cilium 설치 실패!"
         echo "디버그 정보:"
         kubectl get pods -n kube-system
-        helm list -n kube-system
+        /usr/local/bin/helm list -n kube-system
         exit 1
       }
 fi
